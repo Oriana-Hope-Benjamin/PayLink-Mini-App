@@ -16,3 +16,4 @@ Route::post('/webhooks/momo', [PaymentController::class, 'webhook']);
 //Test Routes
 Route::post('/test/momo-token', [TestController::class, 'getAccessToken']);
 Route::post('/test/momo-initiate', [TestController::class, 'requestPayment']);
+Route::get('/test/momo-status/{payment_id}', [TestController::class, 'verifyPaymentStatus']);

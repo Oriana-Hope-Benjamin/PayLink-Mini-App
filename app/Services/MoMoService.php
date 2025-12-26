@@ -29,77 +29,13 @@ class MoMoService
     }
 
     /**
-     * Step 1: Request Payment from the Payer's Phone
-     */
-    public function requestPayment(Payments $payment): bool
-    {
-        try {
-            /** @var Response $response */
-            $response = Http::asJson()
-                ->withHeaders([
-                    'Authorization' => 'Bearer ' . $this->getAccessToken(),
-                    'X-Target-Environment' => 'sandbox',
-                    'Ocp-Apim-Subscription-Key' => $this->subscriptionKey,
-                    'X-Reference-Id' => $payment->internal_reference,
-                    'Accept' => 'application/json',
-                ])
-                ->post(
-                    'https://sandbox.momodeveloper.mtn.com/collection/v1_0/requesttopay',
-                    [
-                        'amount' => (string) $payment->amount,
-                        'currency' => $payment->currency,
-                        'externalId' => $payment->internal_reference,
-                        'payer' => [
-                            'partyIdType' => 'MSISDN',
-                            'partyId' => $payment->payer_phone,
-                        ],
-                        'payerMessage' => $payment->description,
-                        'payeeNote' => 'System Generated Payment',
-                    ]
-                );
-
-            if ($response->failed()) {
-                Log::error('MoMo Initiation Failed', [
-                    'status' => $response->status(),
-                    'body' => $response->body(),
-                ]);
-                return false;
-            }
-
-            // MoMo returns 202 Accepted for request-to-pay; require 202 specifically
-            if ($response->status() === 202) {
-                $externalId = $response->header('X-Reference-Id') ?? $response->json('id') ?? $payment->internal_reference;
-
-                $payment->update([
-                    /* 'external_txn_id' => $externalId, */
-                    'status' => 'PROCESSING',
-                ]);
-                Log::info('MoMo Payment Initiated', [
-                    'payment_id' => $payment->id ?? null,
-                    'external_id' => $externalId ?? null,
-                ]);
-
-                return true;
-            }
-
-            Log::error('MoMo Initiation Unexpected Response', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
-
-            return false;
-        } catch (\Exception $e) {
-            Log::error('MoMo Service Error: ' . $e->getMessage());
-            return false;
-        }
-    }
-
-    /**
      * Step 2: Fetch Token (Standard MoMo OAuth)
      *
      * @return string
      * @throws \RuntimeException
      */
+    
+
     protected function getAccessToken(): string
     {
         /** @var string|null $token */
@@ -140,12 +76,79 @@ class MoMoService
     }
 
     /**
+     * Step 1: Request Payment from the Payer's Phone
+     */
+    public function requestPayment(Payments $payment): bool
+    {
+        try {
+            /** @var Response $response */
+            $response = Http::asJson()
+                ->withHeaders([
+                    'Authorization' => 'Bearer ' . $this->getAccessToken(),
+                    'X-Target-Environment' => 'sandbox',
+                    'Ocp-Apim-Subscription-Key' => $this->subscriptionKey,
+                    'X-Reference-Id' => $payment->internal_reference,
+                    'Accept' => 'application/json',
+                ])
+                ->post(
+                    'https://sandbox.momodeveloper.mtn.com/collection/v1_0/requesttopay',
+                    [
+                        'amount' => (string) $payment->amount,
+                        'currency' => $payment->currency,
+                        'externalId' => $payment->internal_reference,
+                        'payer' => [
+                            'partyIdType' => 'MSISDN',
+                            'partyId' => $payment->payer_phone,
+                        ],
+                        'payerMessage' => $payment->description,
+                        'payeeNote' => 'System Generated Payment',
+                    ]
+                );
+
+            if ($response->failed()) {
+                Log::error('MoMo Initiation Failed', [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+                return false;
+            }
+
+            // MoMo returns 202 Accepted for request-to-pay; require 202 specifically
+            if ($response->status() === 202) {
+                $externalId = $response->header('X-Reference-Id');
+
+                $payment->update([
+                    'status' => 'PROCESSING',
+                ]);
+                Log::info('MoMo Payment Initiated', [
+                    'payment_id' => $payment->id ?? null,
+                    'external_id' => $externalId ?? null,
+                ]);
+
+                return true;
+            }
+
+            Log::error('MoMo Initiation Unexpected Response', [
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+
+            return false;
+        } catch (\Exception $e) {
+            Log::error('MoMo Service Error: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    
+
+    /**
      * Check the status of a specific transaction
      */
     public function verifyPaymentStatus(Payments $payment): string
     {
         // Ensure we have a reference to query (avoid undefined property warnings)
-        $reference = $payment->internal_reference ?? $payment->getAttribute('internal_reference') ?? null;
+        $reference = $payment->internal_reference ??  null;
 
         if (empty($reference)) {
             Log::warning('MoMo verifyPaymentStatus missing internal_reference', [
@@ -166,6 +169,11 @@ class MoMoService
             if ($response->successful()) {
                 $status = $response->json('status');
 
+                Log::info('MoMo Status Check', [
+                    'status' => $status,
+                    'payment_id' => $payment->id ?? null,
+                ]);
+
                 if (!is_string($status) || $status === '') {
                     Log::warning('MoMo verifyPaymentStatus unexpected response', [
                         'body' => $response->body(),
@@ -175,8 +183,12 @@ class MoMoService
                     return 'UNKNOWN';
                 }
 
-                if ($status === 'SUCCESSFUL' && (($payment->status) ?? null) !== 'SUCCESS') {
+                if ($status === 'SUCCESSFUL' && $payment->status !== 'SUCCESS') {
                     $payment->update(['status' => 'SUCCESS']);
+                    $financialTransactionId = $response->json('financialTransactionId');
+                    if ($financialTransactionId) {
+                        $payment->update(['external_txn_id' => $financialTransactionId]);
+                    }
                     Log::info('MoMo Payment marked as SUCCESS', [
                         'payment_id' => $payment->id ?? null,
                     ]);

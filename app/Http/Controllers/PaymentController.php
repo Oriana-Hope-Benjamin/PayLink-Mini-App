@@ -83,7 +83,7 @@ class PaymentController extends Controller
         $publicRef = $request->input('externalId');
         $status = $request->input('status'); // e.g., SUCCESSFUL, FAILED
 
-        $payment = Payments::where('public_ref', $publicRef)->first();
+        $payment = Payments::where('internal_reference', $publicRef)->first();
 
         if (!$payment) {
             $log->update(['processing_result' => 'Payment not found']);
@@ -96,9 +96,14 @@ class PaymentController extends Controller
         }
 
         // 4. Update Status and Trigger Receipt
-        DB::transaction(function () use ($payment, $status, $log) {
+        DB::transaction(function () use ($payment, $status, $log, $request) {
             if ($status === 'SUCCESSFUL') {
                 $payment->update(['status' => 'SUCCESS']);
+
+                $financialTransactionId = $request->input('financialTransactionId');
+                if ($financialTransactionId) {
+                    $payment->update(['external_txn_id' => $financialTransactionId]);
+                }
 
                 // Dispatch Background Job for PDF and Notifications
                 GenerateReceiptJob::dispatch($payment);

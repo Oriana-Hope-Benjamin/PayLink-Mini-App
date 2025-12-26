@@ -120,4 +120,68 @@ class TestController extends Controller
             return false;
         }
     }
+
+    public function verifyPaymentStatus(Payments $payment): string
+    {
+        // Ensure we have a reference to query (avoid undefined property warnings)
+        $reference = $payment->internal_reference ?? $payment->getAttribute('internal_reference') ?? null ?? "11b08485-b870-4dcb-9cd2-6b7b237634a";
+
+        if (empty($reference)) {
+            Log::warning('MoMo verifyPaymentStatus missing internal_reference', [
+                'payment_id' => $payment->id ?? null,
+            ]);
+
+            return 'MISSING_REFERENCE';
+        }
+
+        try {
+            /** @var Response $response */
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $this->getAccessToken(),
+                'X-Target-Environment' => $this->environment,
+                'Ocp-Apim-Subscription-Key' => $this->subscriptionKey,
+            ])->get($this->baseUrl . "/collection/v1_0/requesttopay/a5d9f5ec-f9ba-4038-9934-074f10afecc6");
+
+            if ($response->successful()) {
+                $status = $response->json('status');
+
+                if (!is_string($status) || $status === '') {
+                    Log::warning('MoMo verifyPaymentStatus unexpected response', [
+                        'body' => $response->body(),
+                        'payment_id' => $payment->id ?? null,
+                    ]);
+
+                    return 'UNKNOWN';
+                }
+
+                if ($status === 'SUCCESSFUL' && (($payment->status) ?? null) !== 'SUCCESS') {
+                    $payment->update(['status' => 'SUCCESS']);
+                    $financialTransactionId = $response->json('financialTransactionId');
+                    if ($financialTransactionId) {
+                        $payment->update(['external_txn_id' => $financialTransactionId]);
+                    }
+                    Log::info('MoMo Payment marked as SUCCESS', [
+                        'payment_id' => $payment->id ?? null,
+                    ]);
+                    GenerateReceiptJob::dispatch($payment);
+                }
+
+                return $status;
+            }
+
+            Log::warning('MoMo verifyPaymentStatus failed to reach provider', [
+                'http_status' => $response->status(),
+                'body' => $response->body(),
+                'payment_id' => $payment->id ?? null,
+            ]);
+
+            return 'FAILED_TO_REACH_PROVIDER';
+        } catch (\Exception $e) {
+            Log::error('MoMo verifyPaymentStatus Exception: ' . $e->getMessage(), [
+                'payment_id' => $payment->id ?? null,
+            ]);
+
+            return 'FAILED_TO_REACH_PROVIDER';
+        }
+    }
 }
